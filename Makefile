@@ -11,7 +11,10 @@ chess.o: chess.asm
 run: chess
 	./chess
 
+test: chess
+	python3 -m pytest -q tests
+
 clean:
 	rm -f chess chess.o
 
-.PHONY: run clean
+.PHONY: run test clean

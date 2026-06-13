@@ -2,6 +2,11 @@
 
 ```sh
 make run
+make test
+```
+
+```
+e4   Nf3   exd5   Nbd2   O-O   O-O-O   e8=Q
 ```
 
 ```
@@ -18,7 +23,7 @@ make run
 
     a b c d e f g h
 
-move (e2e4, q=quit)>
+move (e4 Nf3 exd5 O-O e8=Q, q=quit)>
 ```
 
 ```

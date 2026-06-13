@@ -1,3 +1,5 @@
 chess
 *.o
 *.raw
+__pycache__/
+.pytest_cache/
