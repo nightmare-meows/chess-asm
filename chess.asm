@@ -11,6 +11,11 @@ prompt_len equ $-prompt
 bye        db 10,"here before the question",10
 bye_len    equ $-bye
 tick       dq 0, 20000000
+serve_str  db "--serve",0
+shm_path   db "/dev/shm/chess.state",0
+mq_name    db "chess.moves",0
+align 8
+mq_attr    dq 0, 8, 16, 0
 
 section .bss
 board  resb 64
@@ -25,6 +30,15 @@ mrank  resb 1          ; source rank hint as board row 0..7, 0xFF none
 mpromo resb 1          ; promotion piece letter (uppercase), 0 none
 mpc    resb 1          ; resolved board char to match, 0 = any
 mlen   resb 1          ; token length
+shm      resq 1
+shm_fd   resq 1
+mq_fd    resq 1
+msgbuf   resb 16
+g_result resb 1
+g_reject resb 1
+g_ply    resd 1
+g_rejseq resq 1
+g_last   resb 8
 
 section .text
 global _start
@@ -46,6 +60,14 @@ global _start
 %endmacro
 
 _start:
+    mov rdi, [rsp]
+    cmp rdi, 2
+    jl .interactive
+    mov rsi, [rsp+16]
+    mov rax, [rsi]
+    cmp rax, [serve_str]
+    je serve
+.interactive:
     mov rsi, board_init
     mov rdi, board
     mov rcx, 64
@@ -983,4 +1005,160 @@ flush:
     mov edi, 1
     mov rsi, outbuf
     syscall
+    ret
+
+; ---- IPC arbiter: --serve ----
+serve:
+    mov rsi, board_init
+    mov rdi, board
+    mov rcx, 64
+    rep movsb
+    mov byte [side], 0
+    mov byte [g_result], 0
+    mov byte [g_reject], 0
+    mov dword [g_ply], 0
+    mov qword [g_rejseq], 0
+    mov qword [g_last], 0
+
+    mov eax, 257
+    mov edi, -100
+    mov rsi, shm_path
+    mov edx, 0x42
+    mov r10d, 0o644
+    syscall
+    mov [shm_fd], rax
+
+    mov eax, 77
+    mov rdi, [shm_fd]
+    mov esi, 256
+    syscall
+
+    mov eax, 9
+    xor edi, edi
+    mov esi, 256
+    mov edx, 3
+    mov r10d, 1
+    mov r8, [shm_fd]
+    xor r9, r9
+    syscall
+    mov [shm], rax
+
+    mov r10, rax
+    mov dword [r10], 0x31534843
+    mov dword [r10+4], 1
+    mov qword [r10+8], 0
+    call publish
+
+    mov eax, 241
+    mov rdi, mq_name
+    syscall
+
+    mov eax, 240
+    mov rdi, mq_name
+    mov esi, 0x42
+    mov edx, 0o644
+    mov r10, mq_attr
+    syscall
+    mov [mq_fd], rax
+
+.sloop:
+    mov eax, 243
+    mov rdi, [mq_fd]
+    mov rsi, msgbuf
+    mov edx, 16
+    xor r10, r10
+    xor r8, r8
+    syscall
+    test rax, rax
+    jle .sdone
+
+    movzx eax, byte [msgbuf]
+    cmp byte [side], 0
+    jne .exp_black
+    cmp al, 'W'
+    jne .reject
+    jmp .colok
+.exp_black:
+    cmp al, 'B'
+    jne .reject
+.colok:
+    lea rsi, [msgbuf+1]
+    mov rdi, inbuf
+    mov rcx, 15
+    rep movsb
+    mov byte [inbuf+15], 0
+    mov bl, [side]
+    call san_move
+    cmp bl, [side]
+    je .reject
+
+    mov byte [g_reject], 0
+    inc dword [g_ply]
+    mov qword [g_last], 0
+    xor ecx, ecx
+.cpl:
+    mov al, [inbuf+rcx]
+    cmp al, ' '
+    jbe .cpl_done
+    mov [g_last+rcx], al
+    inc ecx
+    cmp ecx, 7
+    jl .cpl
+.cpl_done:
+    call publish
+    jmp .sloop
+
+.reject:
+    movzx eax, byte [msgbuf]
+    cmp al, 'W'
+    jne .rb
+    mov byte [g_reject], 1
+    jmp .rinc
+.rb:
+    mov byte [g_reject], 2
+.rinc:
+    inc qword [g_rejseq]
+    call publish
+    jmp .sloop
+
+.sdone:
+    mov eax, 241
+    mov rdi, mq_name
+    syscall
+    mov eax, 87
+    mov rdi, shm_path
+    syscall
+    mov eax, 60
+    xor edi, edi
+    syscall
+
+; ---- seqlock publish: working state -> shm ----
+publish:
+    mov r10, [shm]
+    inc qword [r10+8]
+    mov al, [side]
+    mov [r10+16], al
+    mov al, [g_result]
+    mov [r10+17], al
+    mov al, [g_reject]
+    mov [r10+18], al
+    mov byte [r10+19], 0
+    mov eax, [g_ply]
+    mov [r10+20], eax
+    mov rax, [g_rejseq]
+    mov [r10+24], rax
+    mov rax, [g_last]
+    mov [r10+32], rax
+    push rsi
+    push rdi
+    push rcx
+    mov rsi, board
+    lea rdi, [r10+40]
+    mov rcx, 64
+    rep movsb
+    pop rcx
+    pop rdi
+    pop rsi
+    sfence
+    inc qword [r10+8]
     ret
